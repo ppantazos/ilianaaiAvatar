@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-Api-Key', 'Authorization']
+  allowedHeaders: ['Content-Type', 'X-Api-Key', 'X-api-key', 'Authorization']
 }));
 
 app.use(express.json());

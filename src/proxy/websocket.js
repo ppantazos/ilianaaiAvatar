@@ -60,7 +60,9 @@ export function setupWebSocketProxy(server) {
       return;
     }
 
-    const heygenUrl = `${HEYGEN_WS_URL}/v1/ws/streaming.chat?session_id=${sessionId}&session_token=${sessionToken}`;
+    // Forward all query params to Heygen (silence_response, opening_text, stt_language, enable_tts, enable_stt, etc.)
+    const queryString = searchParams.toString();
+    const heygenUrl = `${HEYGEN_WS_URL}/v1/ws/streaming.chat?${queryString}`;
     const heygenWs = new WebSocket(heygenUrl);
 
     heygenWs.on('open', () => {

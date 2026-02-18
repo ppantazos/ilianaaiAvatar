@@ -87,14 +87,16 @@ router.post('/v1/streaming.start', async (req, res) => {
 /**
  * POST /v1/streaming.task
  * Forward to Heygen; collect user text for transcript.
+ * Only task_type "talk" is a user message; "repeat" is avatar speaking (from WebSocket).
  */
 router.post('/v1/streaming.task', async (req, res) => {
   try {
     const body = req.body || {};
     const sessionId = body.session_id;
     const text = body.text ?? body.transcript;
+    const taskType = body.task_type;
 
-    if (sessionId && text) {
+    if (sessionId && text && taskType === 'talk') {
       addUserMessage(sessionId, text);
     }
 
