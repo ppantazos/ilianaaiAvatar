@@ -7,8 +7,10 @@ Proxy service for Heygen streaming API. Authenticates customers via API key, inj
 ```
 chatbot-plugin (browser) → ilianaaiAvatar → Heygen API
                               ↓
-                        Petya (config + updateConversationStatus)
+                        Petya (optional: updateConversationStatus)
 ```
+
+Avatar config comes from the **client** (avatar_id in request body) or **env vars** (DEFAULT_AVATAR_ID). No Petya dependency for config.
 
 ## Setup
 
@@ -39,7 +41,7 @@ npm run dev
 
 **Authentication:** All requests require `X-Api-Key` or `Authorization: Bearer <key>` with the customer API key.
 
-**streaming.new body:** Include `conversation_id` for Petya's `updateConversationStatus`. Example: `{ quality: "medium", version: "v2", conversation_id: "..." }`.
+**streaming.new body:** `{ quality, version, conversation_id?, avatar_id?, knowledge_base_id?, voice_id?, intro? }`. Pass `avatar_id` (or set DEFAULT_AVATAR_ID in .env).
 
 ## Chatbot-Plugin Integration
 
@@ -53,6 +55,13 @@ npm run dev
 |----------|-------------|
 | `HEYGEN_API_KEY` | Heygen API key |
 | `HEYGEN_BASE_URL` | Heygen API base (default: https://api.heygen.com) |
-| `PETYA_BASE_URL` | Base URL of Petya backend (no trailing slash). ilianaaiAvatar calls `{PETYA_BASE_URL}/api/v1/avatar/config` and `{PETYA_BASE_URL}/api/v1/avatar/conversations/:id/status`. Local: `http://localhost:5000`, Prod: `https://api.yourdomain.com` |
-| `AVATAR_SERVICE_SECRET` | Shared secret for Petya updateConversationStatus |
+| `DEFAULT_AVATAR_ID` | Heygen avatar ID used when client doesn't send avatar_id (required for streaming.new) |
+| `DEFAULT_KNOWLEDGE_BASE_ID` | Optional. Heygen knowledge base ID |
+| `DEFAULT_INTRO` | Optional. Greeting text for client |
+| `PETYA_BASE_URL` | Optional. Petya backend URL for updateConversationStatus. Omit for isolated mode |
+| `AVATAR_SERVICE_SECRET` | Optional. Shared secret for Petya. Required only when PETYA_BASE_URL is set |
 | `PORT` | Server port (default: 3000) |
+
+When calling Petya's status endpoint, ilianaaiAvatar sends both `X-Avatar-Service-Secret` and `X-Api-Key` (customer key from the session) so Petya can upsert conversations.
+
+**ilianaaiAvatar does not write to MongoDB.** All conversation creation/updates go through Petya's `POST /api/v1/avatar/conversations/:id/status` endpoint.

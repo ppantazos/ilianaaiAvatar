@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'http';
 import express from 'express';
 import cors from 'cors';
@@ -15,11 +16,20 @@ app.use(cors({
 
 app.use(express.json());
 
-app.use('/', heygenRoutes);
-
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'ilianaaiavatar' });
 });
+
+// No auth — for debugging config (does not expose secrets)
+app.get('/debug', (req, res) => {
+  res.json({
+    heygenApiKeySet: !!process.env.HEYGEN_API_KEY,
+    defaultAvatarIdSet: !!process.env.DEFAULT_AVATAR_ID,
+    petyaConfigured: !!(process.env.PETYA_BASE_URL && process.env.AVATAR_SERVICE_SECRET)
+  });
+});
+
+app.use('/', heygenRoutes);
 
 const server = http.createServer(app);
 setupWebSocketProxy(server);

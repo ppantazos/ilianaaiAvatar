@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { extractApiKey } from '../middleware/auth.js';
 import { heygenPost } from '../services/heygen.js';
-import { getAvatarConfig, updateConversationStatus } from '../services/petya.js';
+import { updateConversationStatusIfConfigured } from '../services/petya.js';
 import {
   initSession,
   addUserMessage,
@@ -23,24 +23,39 @@ router.post('/v1/streaming.create_token', async (req, res) => {
     res.json(data);
   } catch (err) {
     const status = err.response?.status || 500;
-    const message = err.response?.data || err.message;
-    res.status(status).json(typeof message === 'object' ? message : { error: message });
+    const data = err.response?.data;
+    const message = data || err.message;
+    const body = typeof message === 'object' ? message : { error: message };
+    // If Heygen returns 401 (e.g. code 400112), add a hint
+    if (status === 401 && data?.code === 400112) {
+      body._hint = 'This 401 is from Heygen — check HEYGEN_API_KEY in .env';
+    }
+    res.status(status).json(body);
   }
 });
 
 /**
  * POST /v1/streaming.new
- * 1. Get avatar config from Petya
- * 2. Forward to Heygen with avatar_id, knowledge_base_id
- * 3. Return Heygen response + intro
- * 4. Store conversation_id ↔ session_id
+ * Avatar config from: (1) request body, (2) env vars. No Petya dependency.
+ * Forward to Heygen with avatar_id, knowledge_base_id, etc.
  */
 router.post('/v1/streaming.new', async (req, res) => {
   try {
-    const { quality, version, conversation_id } = req.body || {};
-    
-    const config = await getAvatarConfig(req.customerApiKey);
-    const { avatarId, intro, knowledgeBaseId, voiceId } = config;
+    const body = req.body || {};
+    const { quality, version, conversation_id, avatar_id, knowledge_base_id, voice_id, intro } = body;
+
+    // Avatar config: client first, then env defaults
+    const avatarId = avatar_id || process.env.DEFAULT_AVATAR_ID;
+    const knowledgeBaseId = knowledge_base_id || process.env.DEFAULT_KNOWLEDGE_BASE_ID;
+    const voiceId = voice_id || process.env.DEFAULT_VOICE_ID;
+    const introText = intro !== undefined ? intro : process.env.DEFAULT_INTRO;
+
+    if (!avatarId) {
+      return res.status(400).json({
+        error: 'Missing avatar_id',
+        message: 'Provide avatar_id in request body or set DEFAULT_AVATAR_ID in .env'
+      });
+    }
 
     const heygenBody = {
       quality: quality || 'medium',
@@ -51,20 +66,21 @@ router.post('/v1/streaming.new', async (req, res) => {
     };
 
     const data = await heygenPost('/v1/streaming.new', heygenBody);
-    
+
     const sessionId = data?.data?.session_id;
     if (sessionId) {
-      initSession(sessionId, conversation_id);
+      initSession(sessionId, conversation_id, req.customerApiKey);
     }
 
-    if (intro !== undefined && data?.data) {
-      data.data.intro = intro;
+    if (introText !== undefined && data?.data) {
+      data.data.intro = introText;
     }
 
     res.json(data);
   } catch (err) {
     const status = err.response?.status || 500;
-    const message = err.response?.data || err.message;
+    const data = err.response?.data;
+    const message = data || err.message;
     res.status(status).json(typeof message === 'object' ? message : { error: message });
   }
 });
@@ -122,17 +138,20 @@ router.post('/v1/streaming.stop', async (req, res) => {
 
     if (sessionId) {
       const session = consumeSession(sessionId);
-      if (session?.entries?.length) {
-        try {
-          await updateConversationStatus(session.conversationId, {
-            sessionId,
-            status: 'completed',
-            transcript: session.entries
-          });
-        } catch (updateErr) {
-          console.error('Failed to update conversation status:', updateErr.message);
-        }
+      if (!session) {
+        console.warn('[streaming.stop] No session found for sessionId:', sessionId);
+      } else if (!session.entries?.length) {
+        console.log('[streaming.stop] Session has no transcript entries, skipping Petya', { sessionId, conversationId: session.conversationId });
+      } else {
+        console.log('[streaming.stop] Persisting to Petya:', { sessionId, conversationId: session.conversationId, entries: session.entries.length });
+        await updateConversationStatusIfConfigured(session.conversationId, {
+          sessionId,
+          status: 'completed',
+          transcript: session.entries
+        }, session.customerApiKey);
       }
+    } else {
+      console.warn('[streaming.stop] No session_id in request body');
     }
 
     res.json(data);

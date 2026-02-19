@@ -1,7 +1,7 @@
 /**
  * In-memory transcript storage per session.
  * Key: session_id
- * Value: { conversationId, entries: [{ role, transcript, timestamp }] }
+ * Value: { conversationId, customerApiKey, entries: [{ role, transcript, timestamp }] }
  */
 const sessionTranscripts = new Map();
 
@@ -9,12 +9,16 @@ const sessionTranscripts = new Map();
  * Initialize transcript for a session.
  * @param {string} sessionId - Heygen session ID
  * @param {string} conversationId - Petya/SellEmbedded conversation ID
+ * @param {string} customerApiKey - Customer API key (for Petya upsert)
  */
-export function initSession(sessionId, conversationId) {
-  sessionTranscripts.set(sessionId, {
+export function initSession(sessionId, conversationId, customerApiKey) {
+  const stored = {
     conversationId: conversationId || sessionId,
+    customerApiKey: customerApiKey || null,
     entries: []
-  });
+  };
+  sessionTranscripts.set(sessionId, stored);
+  console.log('[Transcript] initSession:', { sessionId, conversationId: stored.conversationId, hasApiKey: !!customerApiKey });
 }
 
 /**
@@ -50,7 +54,7 @@ export function addAvatarMessage(sessionId, text) {
 /**
  * Get and remove transcript for a session.
  * @param {string} sessionId
- * @returns {{ conversationId: string, transcript: Array } | null}
+ * @returns {{ conversationId: string, customerApiKey?: string, entries: Array } | null}
  */
 export function consumeSession(sessionId) {
   const session = sessionTranscripts.get(sessionId);

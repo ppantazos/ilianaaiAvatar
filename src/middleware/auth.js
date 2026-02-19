@@ -3,6 +3,9 @@
  * Attaches customerApiKey to req for downstream use.
  */
 export function extractApiKey(req, res, next) {
+  // Skip auth for OPTIONS (CORS preflight) — browser doesn't send custom headers
+  if (req.method === 'OPTIONS') return next();
+
   const apiKey = req.headers['x-api-key'] || 
     (req.headers.authorization?.startsWith('Bearer ') 
       ? req.headers.authorization.slice(7) 
@@ -11,7 +14,9 @@ export function extractApiKey(req, res, next) {
   if (!apiKey) {
     return res.status(401).json({
       error: 'Missing API key',
-      message: 'Provide X-Api-Key or Authorization header with customer API key'
+      message: 'Provide X-Api-Key or Authorization header with customer API key',
+      _source: 'ilianaaiavatar',
+      _hint: 'Send X-Api-Key header with your customer API key (e.g. SE_xxxx from SellEmbedded)'
     });
   }
   

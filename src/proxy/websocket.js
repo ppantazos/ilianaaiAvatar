@@ -1,6 +1,6 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { addAvatarMessage, consumeSession } from '../services/transcript.js';
-import { updateConversationStatus } from '../services/petya.js';
+import { updateConversationStatusIfConfigured } from '../services/petya.js';
 
 const HEYGEN_WS_URL = (process.env.HEYGEN_BASE_URL || 'https://api.heygen.com')
   .replace(/^https/, 'wss')
@@ -106,17 +106,19 @@ export function setupWebSocketProxy(server) {
 
   async function finishSession(sessionId) {
     const session = consumeSession(sessionId);
-    if (!session || !session.entries.length) return;
-    
-    const conversationId = session.conversationId;
-    try {
-      await updateConversationStatus(conversationId, {
-        sessionId,
-        status: 'completed',
-        transcript: session.entries
-      });
-    } catch (err) {
-      console.error('Failed to update conversation status:', err.message);
+    if (!session) {
+      console.log('[WebSocket] finishSession: No session found for', sessionId);
+      return;
     }
+    if (!session.entries?.length) {
+      console.log('[WebSocket] finishSession: No transcript entries, skipping Petya', { sessionId, conversationId: session.conversationId });
+      return;
+    }
+    console.log('[WebSocket] finishSession: Persisting to Petya', { sessionId, conversationId: session.conversationId, entries: session.entries.length });
+    await updateConversationStatusIfConfigured(session.conversationId, {
+      sessionId,
+      status: 'completed',
+      transcript: session.entries
+    }, session.customerApiKey);
   }
 }

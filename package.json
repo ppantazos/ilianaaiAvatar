@@ -6,14 +6,26 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "predev": "kill-port 3000",
+    "dev": "node --watch src/index.js",
+    "test:heygen": "node scripts/test-heygen.js",
+    "list:avatars": "node scripts/list-avatars.js"
   },
-  "keywords": ["heygen", "avatar", "proxy", "petya"],
+  "keywords": [
+    "heygen",
+    "avatar",
+    "proxy",
+    "petya"
+  ],
   "license": "MIT",
   "dependencies": {
     "axios": "^1.6.2",
     "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
     "express": "^4.18.2",
     "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "kill-port": "^2.0.1"
   }
 }
