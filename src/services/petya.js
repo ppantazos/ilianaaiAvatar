@@ -6,6 +6,64 @@ const AVATAR_SERVICE_SECRET = process.env.AVATAR_SERVICE_SECRET;
 const isPetyaConfigured = () => PETYA_BASE_URL && AVATAR_SERVICE_SECRET;
 
 /**
+ * Post a single message to Petya in real time (before/after Heygen).
+ * Does not create conversation; conversation can be created later when status is updated.
+ * @param {string} conversationId - Petya conversation ID
+ * @param {string} content - Message content
+ * @param {boolean} isFromUser - true for user, false for avatar
+ * @param {string} [customerApiKey] - Customer API key for auth
+ * @returns {Promise<{ messageId?: string } | null>} Response or null on failure
+ */
+export async function postMessage(conversationId, content, isFromUser, customerApiKey) {
+  if (!isPetyaConfigured() || !conversationId || content == null) return null;
+  const url = `${PETYA_BASE_URL}/api/v1/avatar/conversations/${conversationId}/messages`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Avatar-Service-Secret': AVATAR_SERVICE_SECRET
+  };
+  if (customerApiKey) {
+    headers['X-Api-Key'] = String(customerApiKey).trim();
+  }
+  try {
+    const response = await axios.post(url, { content: String(content).trim(), isFromUser }, { headers });
+    const role = isFromUser ? 'user' : 'avatar';
+    console.log('[Petya] Real-time message stored', { conversationId, role, messageId: response?.data?.messageId });
+    return response?.data ?? null;
+  } catch (err) {
+    console.warn('[Petya] postMessage failed:', err.response?.status || err.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch conversation messages from Petya for context injection.
+ * @param {string} conversationId - Petya conversation ID
+ * @param {string} customerApiKey - Customer API key for auth
+ * @returns {Array<{ content: string, isFromUser?: boolean }>} Messages or empty array on failure
+ */
+export async function fetchConversationMessages(conversationId, customerApiKey) {
+  if (!isPetyaConfigured() || !conversationId) return [];
+  const url = `${PETYA_BASE_URL}/api/v1/avatar/conversations/${conversationId}/messages`;
+  const headers = {
+    'X-Avatar-Service-Secret': AVATAR_SERVICE_SECRET
+  };
+  if (customerApiKey) {
+    headers['X-Api-Key'] = String(customerApiKey).trim();
+  }
+  try {
+    const response = await axios.get(url, { headers });
+    const data = response?.data;
+    const messages = Array.isArray(data) ? data : data?.messages ?? data?.data ?? [];
+    return messages;
+  } catch (err) {
+    if (process.env.DEBUG_TRANSCRIPT) {
+      console.warn('[Petya] fetchMessages failed:', err.response?.status || err.message);
+    }
+    return [];
+  }
+}
+
+/**
  * Calculate duration in seconds from transcript timestamps.
  * @param {Array} transcript - [{ role, transcript, timestamp }, ...]
  * @returns {number|null} Duration in seconds, or null if not calculable
@@ -72,7 +130,8 @@ export async function updateConversationStatusIfConfigured(conversationId, body,
   if (customerApiKey) {
     console.log('[Petya] X-Api-Key:', customerApiKey.substring(0, 8) + '... (forwarded from session)');
   }
-  console.log('[Petya] Payload:', { conversationId, sessionId, status: payload.status, transcriptCount: transcript?.length, duration: payload.duration });
+  const roleCounts = transcript?.reduce((acc, e) => { acc[e.role] = (acc[e.role] || 0) + 1; return acc; }, {}) || {};
+  console.log('[Petya] Payload:', { conversationId, sessionId, status: payload.status, transcriptCount: transcript?.length, byRole: roleCounts, duration: payload.duration });
 
   try {
     const response = await axios.post(url, payload, { headers });

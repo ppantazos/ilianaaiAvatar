@@ -1,16 +1,63 @@
 import { Router } from 'express';
 import { extractApiKey } from '../middleware/auth.js';
 import { heygenPost } from '../services/heygen.js';
-import { updateConversationStatusIfConfigured } from '../services/petya.js';
+import { updateConversationStatusIfConfigured, fetchConversationMessages, postMessage } from '../services/petya.js';
 import {
   initSession,
   addUserMessage,
-  consumeSession
+  addAvatarMessage,
+  consumeSession,
+  getSessionInfo,
+  getLastEntry
 } from '../services/transcript.js';
 
 const router = Router();
 
 router.use(extractApiKey);
+
+/**
+ * POST /v1/streaming.avatar_message
+ * Store avatar message (plugin calls when avatar_end_message received from LiveKit).
+ * Body: { session_id, text }
+ */
+router.post('/v1/streaming.avatar_message', async (req, res) => {
+  try {
+    const { session_id, text } = req.body || {};
+    if (!session_id) {
+      return res.status(400).json({ error: 'Missing session_id' });
+    }
+    const content = (text ?? '').trim();
+    if (!content) {
+      return res.status(400).json({ error: 'Missing text' });
+    }
+
+    // Skip placeholder/failed extraction (e.g. plugin sends "?" when text is missing)
+    if (content === '?' || content.length < 2) {
+      console.warn('[streaming.avatar_message] Skipping placeholder content:', JSON.stringify(content), '- plugin should fix text extraction from avatar_end_message');
+      return res.json({ ok: true });
+    }
+
+    // Skip duplicate: same as last avatar entry
+    const session = getSessionInfo(session_id);
+    const lastEntry = getLastEntry(session_id);
+    if (lastEntry?.role === 'avatar' && lastEntry?.transcript === content) {
+      console.log('[streaming.avatar_message] Skipping duplicate');
+      return res.json({ ok: true });
+    }
+
+    console.log('[streaming.avatar_message] Storing', { sessionId: session_id, textPreview: content.substring(0, 60) });
+    addAvatarMessage(session_id, content);
+    if (session?.conversationId) {
+      await postMessage(session.conversationId, content, false, session.customerApiKey ?? req.customerApiKey);
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    const message = err.response?.data || err.message;
+    return res.status(status).json(typeof message === 'object' ? { error: message } : { error: String(message) });
+  }
+});
 
 /**
  * POST /v1/streaming.create_token
@@ -42,7 +89,7 @@ router.post('/v1/streaming.create_token', async (req, res) => {
 router.post('/v1/streaming.new', async (req, res) => {
   try {
     const body = req.body || {};
-    const { quality, version, conversation_id, avatar_id, knowledge_base_id, voice_id, intro } = body;
+    const { quality, version, conversation_id, avatar_id, knowledge_base_id, knowledge_base, voice_id, intro } = body;
 
     // Avatar config: client first, then env defaults
     const avatarId = avatar_id || process.env.DEFAULT_AVATAR_ID;
@@ -57,11 +104,32 @@ router.post('/v1/streaming.new', async (req, res) => {
       });
     }
 
+    // Fetch conversation history from Petya so avatar retains context
+    let historyPrefix = '';
+    if (conversation_id && req.customerApiKey) {
+      const messages = await fetchConversationMessages(conversation_id, req.customerApiKey);
+      if (messages?.length > 0) {
+        const lines = messages.map((m) => {
+          const role = m.isFromUser ? 'User' : 'Avatar';
+          const text = (m.content || '').trim().slice(0, 500);
+          return text ? `${role}: ${text}` : null;
+        }).filter(Boolean);
+        if (lines.length > 0) {
+          historyPrefix = `Previous conversation:\n${lines.join('\n')}\n\n`;
+          console.log('[streaming.new] Injected conversation history:', { conversationId: conversation_id, messageCount: lines.length });
+        }
+      }
+    }
+
+    const baseKnowledge = (knowledge_base || '').trim();
+    const knowledgeBaseValue = historyPrefix ? historyPrefix + baseKnowledge : baseKnowledge || undefined;
+
     const heygenBody = {
       quality: quality || 'medium',
       version: version || 'v2',
       avatar_id: avatarId,
       ...(knowledgeBaseId && { knowledge_base_id: knowledgeBaseId }),
+      ...(knowledgeBaseValue && { knowledge_base: knowledgeBaseValue }),
       ...(voiceId && { voice_id: voiceId })
     };
 
@@ -74,6 +142,16 @@ router.post('/v1/streaming.new', async (req, res) => {
 
     if (introText !== undefined && data?.data) {
       data.data.intro = introText;
+    }
+
+    // Optional: rewrite url so client connects via our proxy (set REWRITE_WS_URL=1 to enable)
+    // WARNING: Only use if client uses streaming.chat protocol. LiveKit clients need the original url.
+    if (process.env.REWRITE_WS_URL === '1' && sessionId && data?.data?.url && data?.data?.access_token) {
+      const origUrl = data.data.url;
+      const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'wss' : 'ws';
+      const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${process.env.PORT || 3000}`;
+      data.data.url = `${protocol}://${host}/v1/ws/streaming.chat?session_id=${encodeURIComponent(sessionId)}&session_token=${encodeURIComponent(data.data.access_token)}`;
+      console.log('[streaming.new] Rewrote url for proxy', { sessionId, orig: origUrl.substring(0, 50) + '...' });
     }
 
     res.json(data);
@@ -102,18 +180,31 @@ router.post('/v1/streaming.start', async (req, res) => {
 
 /**
  * POST /v1/streaming.task
- * Forward to Heygen; collect user text for transcript.
- * Only task_type "talk" is a user message; "repeat" is avatar speaking (from WebSocket).
+ * - User messages (talk/chat): store in Petya BEFORE sending to Heygen, then forward
+ * - Avatar messages (repeat): collect for transcript; forward to Heygen
  */
 router.post('/v1/streaming.task', async (req, res) => {
   try {
     const body = req.body || {};
     const sessionId = body.session_id;
     const text = body.text ?? body.transcript;
-    const taskType = body.task_type;
+    const taskType = (body.task_type || '').toLowerCase();
 
-    if (sessionId && text && taskType === 'talk') {
-      addUserMessage(sessionId, text);
+    if (sessionId && text) {
+      const session = getSessionInfo(sessionId);
+      if (taskType === 'talk' || taskType === 'chat') {
+        // Store user message in Petya BEFORE sending to Heygen
+        if (session?.conversationId) {
+          await postMessage(session.conversationId, text, true, session.customerApiKey);
+        }
+        addUserMessage(sessionId, text);
+      } else if (taskType === 'repeat') {
+        // Avatar response (client sends LLM output): store in Petya immediately
+        if (session?.conversationId) {
+          await postMessage(session.conversationId, text, false, session.customerApiKey);
+        }
+        addAvatarMessage(sessionId, text);
+      }
     }
 
     const data = await heygenPost('/v1/streaming.task', body);
@@ -140,14 +231,13 @@ router.post('/v1/streaming.stop', async (req, res) => {
       const session = consumeSession(sessionId);
       if (!session) {
         console.warn('[streaming.stop] No session found for sessionId:', sessionId);
-      } else if (!session.entries?.length) {
-        console.log('[streaming.stop] Session has no transcript entries, skipping Petya', { sessionId, conversationId: session.conversationId });
       } else {
-        console.log('[streaming.stop] Persisting to Petya:', { sessionId, conversationId: session.conversationId, entries: session.entries.length });
+        const roleCounts = (session.entries ?? []).reduce((acc, e) => { acc[e.role] = (acc[e.role] || 0) + 1; return acc; }, {});
+        console.log('[streaming.stop] Calling Petya status:', { sessionId, conversationId: session.conversationId, transcriptByRole: roleCounts });
         await updateConversationStatusIfConfigured(session.conversationId, {
           sessionId,
           status: 'completed',
-          transcript: session.entries
+          transcript: session.entries ?? []
         }, session.customerApiKey);
       }
     } else {
