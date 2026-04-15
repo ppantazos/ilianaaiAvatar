@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const sessionsRouter = require('./routes/sessions');
 const avatarsRouter = require('./routes/avatars');
+const { petyaOriginGate } = require('./middleware/petyaOriginGate');
 
 const PORT = process.env.PORT || 3000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
@@ -27,6 +28,9 @@ const config = {
 };
 sessionsRouter.init(config);
 avatarsRouter.init(config);
+
+// Optional: same Allowed Domains as Petya when clients send Petya X-API-KEY and PETYA_API_BASE_URL is set
+app.use('/api', petyaOriginGate);
 
 app.use('/api/sessions', sessionsRouter.router);
 app.use('/api/avatars', avatarsRouter.router);
